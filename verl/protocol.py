@@ -190,14 +190,20 @@ class DataProto:
             return self.batch.batch_size[0]
         elif self.non_tensor_batch is not None and len(self.non_tensor_batch) > 0:
             random_key = list(self.non_tensor_batch.keys())[0]
-            return self.non_tensor_batch[random_key].shape[0]
+            if isinstance(self.non_tensor_batch[random_key], torch.Tensor):
+                return self.non_tensor_batch[random_key].shape[0]
+            else:
+                return len(self.non_tensor_batch[random_key])
         else:
             return 0
 
     def __getitem__(self, item):
         tensor_data = self.batch[item]
         non_tensor_data = {key: val[item] for key, val in self.non_tensor_batch.items()}
-        return DataProtoItem(batch=tensor_data, non_tensor_batch=non_tensor_data, meta_info=self.meta_info)
+        if isinstance(item, slice) or isinstance(item, torch.Tensor) or isinstance(item, bool):
+            return DataProto(batch=tensor_data, non_tensor_batch=non_tensor_data, meta_info=self.meta_info)
+        else:
+            return DataProtoItem(batch=tensor_data, non_tensor_batch=non_tensor_data, meta_info=self.meta_info)
 
     def __getstate__(self):
         import io
@@ -424,7 +430,9 @@ class DataProto:
             raise ValueError(
                 f'new_keys and old_keys must have the same length, but got {len(new_keys)} and {len(old_keys)}')
 
-        self.batch.rename_key_(tuple(old_keys), tuple(new_keys))
+        # self.batch.rename_key_(tuple(old_keys), tuple(new_keys))
+        for old_key, new_key in zip(old_keys, new_keys):
+            self.batch.rename_key_(old_key, new_key)
 
         return self
 
@@ -595,6 +603,18 @@ class DataProto:
             non_tensor_batch=repeated_non_tensor_batch,
             meta_info=self.meta_info,
         )
+
+    def select_keys_with_prefix(self, prefix: str) -> 'DataProto':
+        """
+        Select keys with a given prefix.
+        """
+        return self.select(batch_keys=[k for k in self.batch.keys() if k.startswith(prefix)])
+
+    def rename_keys_with_prefix(self, prefix: str, new_prefix: str) -> 'DataProto':
+        """
+        Rename keys with a given prefix.
+        """
+        return self.rename(old_keys=[k for k in self.batch.keys() if k.startswith(prefix)], new_keys=[new_prefix + k[len(prefix):] for k in self.batch.keys() if k.startswith(prefix)])
 
 
 import ray

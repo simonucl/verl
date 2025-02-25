@@ -24,6 +24,7 @@ from enum import Enum
 from pprint import pprint
 from typing import Type, Dict, Optional, List, Callable, Any, Tuple
 from copy import deepcopy
+from tensordict import TensorDict
 
 import ray
 import hydra
@@ -36,6 +37,7 @@ from omegaconf import OmegaConf, open_dict
 import wandb
 import transformers
 from verl import DataProto
+from verl.single_controller.base.decorator import register, Dispatch
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.ray import RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
@@ -62,15 +64,23 @@ def generate_pairwise_data(data: DataProto, score_key: str = 'token_level_scores
     non_tensor_batch = data.non_tensor_batch
     
     # Get unique prompts and their indices
-    prompts = non_tensor_batch.get('prompts', [])
-    if not prompts:
+    if 'prompts' in batch and isinstance(batch['prompts'], torch.Tensor) and batch['prompts'].numel() > 0:
+        # Convert tensor prompts to hashable tuples
+        prompts = []
+        for i in range(batch['prompts'].size(0)):
+            prompt_ids = batch['prompts'][i].tolist()
+            prompts.append(tuple(prompt_ids))  # Convert to tuple for hashability
+    else:
         # If prompts not available, use input_ids up to input_token_len as proxy
+        prompts = []
         if 'input_token_len' in batch:
-            prompts = []
             for i, length in enumerate(batch['input_token_len']):
                 prompt_ids = batch['input_ids'][i, :length].tolist()
                 prompts.append(tuple(prompt_ids))  # Use tuple for hashability
-    
+        else:
+            # If neither prompts nor input_token_len available, treat each example as unique
+            prompts = [i for i in range(len(batch['input_ids']))]
+
     # Group indices by prompt
     unique_prompts = {}
     for i in range(len(prompts)):
@@ -105,21 +115,49 @@ def generate_pairwise_data(data: DataProto, score_key: str = 'token_level_scores
             chosen_indices.append(chosen_idx)
             rejected_indices.append(rejected_idx)
     
+    print(f'chosen_indices: {chosen_indices}')
+    print(f'rejected_indices: {rejected_indices}')
     # Create new batch with chosen/rejected pairs
-    pair_data = DataProto()
     
     # Add chosen data
-    chosen_data = data.select(chosen_indices)
-    for k, v in chosen_data.batch.items():
-        pair_data.batch[f'chosen_{k}'] = v
-    
+    chosen_data = data[torch.tensor(chosen_indices)]
     # Add rejected data
-    rejected_data = data.select(rejected_indices)
-    for k, v in rejected_data.batch.items():
-        pair_data.batch[f'rejected_{k}'] = v
+    rejected_data = data[torch.tensor(rejected_indices)]
+    select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids']
+    batch = TensorDict(
+        {
+            'chosen_input_ids': chosen_data.batch['input_ids'],
+            'chosen_attention_mask': chosen_data.batch['attention_mask'],
+            'chosen_position_ids': chosen_data.batch['position_ids'],
+            'chosen_responses': chosen_data.batch['responses'],
+            'rejected_input_ids': rejected_data.batch['input_ids'],
+            'rejected_attention_mask': rejected_data.batch['attention_mask'],
+            'rejected_position_ids': rejected_data.batch['position_ids'],
+            'rejected_responses': rejected_data.batch['responses'],
+        },
+        batch_size=len(chosen_indices),
+    )
     
-    # Add metadata
-    pair_data.non_tensor_batch['pair_ids'] = list(zip(chosen_indices, rejected_indices))
+    # Initialize non_tensor_batch with proper numpy arrays
+    non_tensor_batch = {}
+    for k in chosen_data.non_tensor_batch.keys():
+        # Create a list of pairs for each item
+        paired_data = []
+        for i in range(len(chosen_indices)):
+            chosen_item = chosen_data.non_tensor_batch[k][i]
+            rejected_item = rejected_data.non_tensor_batch[k][i]
+            paired_data.append([chosen_item, rejected_item])
+        
+        # Convert to numpy array
+        non_tensor_batch[k] = np.array(paired_data, dtype=object)
+    
+    # Add pair IDs as numpy array
+    pair_ids = []
+    for i in range(len(chosen_indices)):
+        pair_ids.append([chosen_indices[i], rejected_indices[i]])
+    non_tensor_batch['pair_ids'] = np.array(pair_ids, dtype=object)
+    
+    pair_data = DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
     
     return pair_data
 
@@ -381,7 +419,7 @@ class RayDPOTrainer(object):
             test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
             # Unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-            print('validation generation end')
+            print('generation end')
 
             # Store generated outputs
             output_ids = test_output_gen_batch.batch['responses']
@@ -494,7 +532,7 @@ class RayDPOTrainer(object):
         if self.use_reference_policy:
             self.ref_policy_wg: DPOActorRolloutWorker = all_wg['ref']
             self.ref_policy_wg.init_model()
-            self.ref_policy_wg.eval_model()
+            # self.ref_policy_wg.eval_model()
 
         if self.use_rm:
             self.rm_wg: RewardModelWorker = all_wg['rm']
@@ -673,8 +711,9 @@ class RayDPOTrainer(object):
                     output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
                     
                     # Merge original batch with generated outputs
+                    batch = batch.repeat(repeat_times=self.config.actor_rollout.rollout.n, interleave=True)
                     batch = batch.union(output_gen_batch)
-                
+                                
                 # Compute rewards/scores for generated sequences
                 with _timer('compute_rewards', timing_raw):
                     if self.use_rm:
@@ -692,11 +731,11 @@ class RayDPOTrainer(object):
                 # Generate pairwise data for DPO training
                 with _timer('generate_pairwise_data', timing_raw):
                     pair_batch = generate_pairwise_data(
-                        batch, 
+                        batch,
                         score_key='token_level_scores',
                         top_k=self.config.actor_rollout.actor.get('dpo_top_k_pairs', 1)
                     )
-                
+
                 # Compute reference policy log probabilities if using reference model
                 with _timer('compute_ref_logprobs', timing_raw):
                     if self.use_reference_policy:
@@ -706,26 +745,26 @@ class RayDPOTrainer(object):
                             
                             # Compute log probs for chosen responses
                             chosen_ref_batch = ref_batch_padded.select_keys_with_prefix('chosen_')
-                            chosen_ref_batch.rename_keys_with_prefix('chosen_', '')
-                            ref_chosen_batch_padded = self.ref_policy_wg.compute_logprobs(chosen_ref_batch)
+                            chosen_ref_batch = chosen_ref_batch.rename_keys_with_prefix('chosen_', '')
+                            ref_chosen_batch_padded = self.ref_policy_wg.compute_ref_log_prob(chosen_ref_batch)
                             ref_chosen_batch = unpad_dataproto(ref_chosen_batch_padded, pad_size=pad_size)
                             
                             # Compute log probs for rejected responses
                             rejected_ref_batch = ref_batch_padded.select_keys_with_prefix('rejected_')
-                            rejected_ref_batch.rename_keys_with_prefix('rejected_', '')
-                            ref_rejected_batch_padded = self.ref_policy_wg.compute_logprobs(rejected_ref_batch)
+                            rejected_ref_batch = rejected_ref_batch.rename_keys_with_prefix('rejected_', '')
+                            ref_rejected_batch_padded = self.ref_policy_wg.compute_ref_log_prob(rejected_ref_batch)
                             ref_rejected_batch = unpad_dataproto(ref_rejected_batch_padded, pad_size=pad_size)
                             
                             # Add reference log probs to pair batch
-                            pair_batch.batch['ref_chosen_logprobs'] = ref_chosen_batch.batch['logprobs']
-                            pair_batch.batch['ref_rejected_logprobs'] = ref_rejected_batch.batch['logprobs']
+                            pair_batch.batch['ref_chosen_logprobs'] = ref_chosen_batch.batch['ref_log_prob']
+                            pair_batch.batch['ref_rejected_logprobs'] = ref_rejected_batch.batch['ref_log_prob']
                 
                 # Update policy using DPO
                 with _timer('dpo_update', timing_raw):
                     # Prepare batch for DPO update
                     dpo_batch_padded, pad_size = pad_dataproto_to_divisor(pair_batch, self.actor_rollout_wg.world_size)
                     
-                    # Update policy
+                    # Update policy, TODO check this dpo_update function
                     dpo_metrics_padded = self.actor_rollout_wg.dpo_update(dpo_batch_padded)
                     dpo_metrics = unpad_dataproto(dpo_metrics_padded, pad_size=pad_size)
                     
@@ -750,15 +789,6 @@ class RayDPOTrainer(object):
                     # Log to wandb if configured
                     if 'wandb' in self.config.trainer.logger:
                         wandb.log(metrics, step=self.global_steps)
-                
-                # Skip validation since we don't have validation data
-                # if self.global_steps % self.config.trainer.val_check_interval == 0:
-                #     print("Running validation...")
-                #     val_metrics = self._validate()
-                #     
-                #     # Log validation metrics
-                #     if 'wandb' in self.config.trainer.logger:
-                #         wandb.log(val_metrics, step=self.global_steps)
                 
                 # Save checkpoint
                 if self.global_steps % self.config.trainer.save_every_n_steps == 0:
@@ -789,7 +819,7 @@ class DPOActorRolloutWorker(ActorRolloutRefWorker):
         self.lr_scheduler = None
         self.beta = config.actor.get('dpo_beta', 0.1)  # KL penalty coefficient
         
-    def compute_logprobs(self, batch):
+    def compute_logprobs(self, batch: DataProto):
         """Compute log probabilities for sequences"""
         input_ids = batch.batch['input_ids']
         attention_mask = batch.batch['attention_mask']
@@ -836,73 +866,15 @@ class DPOActorRolloutWorker(ActorRolloutRefWorker):
             
             return batch
     
-    def dpo_update(self, batch):
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def dpo_update(self, batch: DataProto):
         """
         Update model using DPO loss with pairwise data.
         This is the implementation of the method called in the training loop.
         """
-        self.model.train()
-        metrics = DataProto()
-        
-        # Get chosen and rejected sequences
-        chosen_batch = batch.select_keys_with_prefix('chosen_')
-        chosen_batch.rename_keys_with_prefix('chosen_', '')
-        
-        rejected_batch = batch.select_keys_with_prefix('rejected_')
-        rejected_batch.rename_keys_with_prefix('rejected_', '')
-        
-        # Compute policy log probs
-        chosen_batch = self.compute_logprobs(chosen_batch)
-        rejected_batch = self.compute_logprobs(rejected_batch)
-        
-        policy_chosen_logps = chosen_batch.batch['logprobs']
-        policy_rejected_logps = rejected_batch.batch['logprobs']
-        
-        # Get reference model log probs if available
-        if 'ref_chosen_logprobs' in batch.batch and 'ref_rejected_logprobs' in batch.batch:
-            ref_chosen_logps = batch.batch['ref_chosen_logprobs']
-            ref_rejected_logps = batch.batch['ref_rejected_logprobs']
-        else:
-            # If reference log probs are not provided, use the policy's own log probs
-            # This effectively disables the KL penalty
-            ref_chosen_logps = policy_chosen_logps.detach()
-            ref_rejected_logps = policy_rejected_logps.detach()
-        
-        # Compute DPO loss
-        loss, advantages = dpo_loss(
-            policy_chosen_logps=policy_chosen_logps,
-            policy_rejected_logps=policy_rejected_logps,
-            reference_chosen_logps=ref_chosen_logps,
-            reference_rejected_logps=ref_rejected_logps,
-            beta=self.beta
-        )
-        
-        # Backward and optimize
-        self.optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        if self.config.actor.get('max_grad_norm', 0) > 0:
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), 
-                self.config.actor.max_grad_norm
-            )
-        
-        self.optimizer.step()
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
-        
-        # Log metrics
-        metrics.batch['loss'] = loss.detach()
-        metrics.batch['advantages'] = advantages.detach()
-        metrics.batch['policy_chosen_logps'] = policy_chosen_logps.detach()
-        metrics.batch['policy_rejected_logps'] = policy_rejected_logps.detach()
-        
-        # Calculate accuracy (how often policy prefers chosen over rejected)
-        accuracy = (policy_chosen_logps > policy_rejected_logps).float().mean()
-        metrics.batch['accuracy'] = accuracy.detach()
-        
-        return metrics
+        # Simply call the actor's update_dpo_policy method
+        metrics = self.actor.update_dpo_policy(batch)
+        return DataProto(meta_info=metrics)
 
 @hydra.main(config_path='config', config_name='dpo_trainer', version_base=None)
 def main(config):

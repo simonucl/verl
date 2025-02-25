@@ -49,7 +49,7 @@ python verl/trainer/main_dpo.py \
   data.train_batch_size=16 \
   data.shuffle=true \
   data.seed=42 \
-  data.return_raw_chat=false \
+  data.return_raw_chat=true \
   \
   reward_model.enable=true \
   reward_model.model.path="RLHFlow/ArmoRM-Llama3-8B-v0.1" \

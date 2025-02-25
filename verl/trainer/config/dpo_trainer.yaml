@@ -8,7 +8,7 @@ data:
   train_batch_size: 1024
   shuffle: True
   seed: null
-  return_raw_chat: False
+  return_raw_chat: True
 
 actor_rollout:
   hybrid_engine: True
@@ -24,11 +24,14 @@ actor_rollout:
     dpo_beta: 0.1  # Temperature parameter for DPO loss
     dpo_top_k_pairs: 1  # Number of top/bottom pairs to create for each prompt
     dpo_micro_batch_size_per_gpu: null
-    use_dynamic_bsz: False
+    dpo_micro_batch_size: null
+    use_dynamic_bsz: True
     grad_clip: 1.0
     max_grad_norm: 1.0
     shuffle: False
     ulysses_sequence_parallel_size: 1
+    ppo_mini_batch_size: null # Placeholder for ppo compatibility
+    max_length: 4096
     optim:
       lr: 5e-7
       lr_warmup_steps_ratio: 0.03
@@ -53,7 +56,7 @@ actor_rollout:
     response_length: ${data.max_response_length}
     max_new_tokens: null
     dtype: bfloat16
-    gpu_memory_utilization: 0.5
+    gpu_memory_utilization: 0.7
     ignore_eos: False
     enforce_eager: True
     free_cache_engine: True
@@ -61,12 +64,31 @@ actor_rollout:
     tensor_model_parallel_size: 1
     max_num_batched_tokens: 8192
     max_num_seqs: 1024
-    log_prob_micro_batch_size_per_gpu: 8
+    log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
+    log_prob_micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size} # Placeholder for ppo compatibility
+    log_prob_max_token_len_per_gpu: ${actor_rollout.actor.max_length}
+    log_prob_use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
     disable_log_stats: True
     enable_chunked_prefill: True
     do_sample: True
-    n: 4  # Generate multiple responses per prompt for pairwise comparison
-
+    n: 8  # Generate multiple responses per prompt for pairwise comparison
+  ref:
+    strategy: fsdp
+    use_fast_tokenizer: True
+    use_remove_padding: False
+    trust_remote_code: false
+    fsdp_config:
+      min_num_params: 0
+      param_offload: False
+      fsdp_size: -1
+    micro_batch_size_per_gpu: null
+    max_length: ${actor_rollout.actor.max_length}
+    ulysses_sequence_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
+    log_prob_micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size} # Placeholder for ppo compatibility
+    log_prob_max_token_len_per_gpu: ${actor_rollout.actor.max_length}
+    log_prob_use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
+  
 reward_model:
   enable: False
   strategy: fsdp
@@ -81,6 +103,7 @@ reward_model:
       param_offload: False
       fsdp_size: -1
   micro_batch_size_per_gpu: null
+  micro_batch_size: null # Placeholder for ppo compatibility
   max_length: null
   ulysses_sequence_parallel_size: 1
   use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}

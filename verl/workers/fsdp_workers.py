@@ -115,7 +115,7 @@ class ActorRolloutRefWorker(Worker):
             self._is_offload_param = self.config.ref.fsdp_config.get('param_offload', False)
 
         # normalize config
-        if self._is_actor:
+        if self._is_actor and self.config.actor.ppo_mini_batch_size is not None:
             self.config.actor.ppo_mini_batch_size *= self.config.rollout.n
             self.config.actor.ppo_mini_batch_size //= (self.device_mesh.shape[0] // self.ulysses_sequence_parallel_size)
             # micro bsz
@@ -368,7 +368,7 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
-            self.actor = DataParallelPPOActor(config=self.config.actor,
+            self.actor: DataParallelPPOActor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,
                                               actor_optimizer=self.actor_optimizer)
 
@@ -487,7 +487,7 @@ class ActorRolloutRefWorker(Worker):
 
         # clear kv cache
         torch.cuda.empty_cache()
-        log_gpu_memory_usage('After recompute log prob', logger=logger)
+        log_gpu_memory_usage('After rollout generation', logger=logger)
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -1033,7 +1033,7 @@ class RewardModelWorker(Worker):
 
         for i in range(data.batch.batch_size[0]):
             # extract raw prompt
-            chat: list = data.non_tensor_batch['raw_prompt'][i].tolist()
+            chat: list = data.non_tensor_batch['raw_prompt'][i]
 
             # extract response
             response_ids = data.batch['responses'][i]

@@ -287,3 +287,116 @@ class DataParallelPPOActor(BasePPOActor):
             append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
         return metrics
+
+    def update_dpo_policy(self, data: DataProto):
+        """Update policy using DPO loss with pairwise data"""
+        # Make sure we're in training mode
+        self.actor_module.train()
+        
+        # Get temperature from meta_info
+        temperature = data.meta_info['temperature']
+        
+        # Extract chosen and rejected data
+        chosen_batch = data.select_keys_with_prefix('chosen_')
+        chosen_batch = chosen_batch.rename_keys_with_prefix('chosen_', '')
+        
+        rejected_batch = data.select_keys_with_prefix('rejected_')
+        rejected_batch = rejected_batch.rename_keys_with_prefix('rejected_', '')
+        
+        # Get reference log probs if available
+        has_ref_logprobs = 'ref_chosen_logprobs' in data.batch and 'ref_rejected_logprobs' in data.batch
+        
+        # Split into micro-batches for processing
+        if self.config.use_dynamic_bsz:
+            max_token_len = self.config.dpo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+            chosen_micro_batches, chosen_indices = rearrange_micro_batches(
+                batch=chosen_batch.batch, max_token_len=max_token_len)
+            rejected_micro_batches, rejected_indices = rearrange_micro_batches(
+                batch=rejected_batch.batch, max_token_len=max_token_len)
+        else:
+            micro_batch_size = self.config.dpo_micro_batch_size_per_gpu
+            chosen_micro_batches = chosen_batch.batch.split(micro_batch_size)
+            rejected_micro_batches = rejected_batch.batch.split(micro_batch_size)
+        
+        # Zero gradients before processing batches
+        self.actor_optimizer.zero_grad()
+        
+        metrics = {}
+        total_loss = 0
+        
+        # Process each micro-batch
+        for chosen_micro, rejected_micro in zip(chosen_micro_batches, rejected_micro_batches):
+            chosen_micro = chosen_micro.cuda()
+            rejected_micro = rejected_micro.cuda()
+            
+            # Forward pass for chosen responses
+            _, chosen_log_probs = self._forward_micro_batch(
+                micro_batch=chosen_micro, temperature=temperature)
+            
+            # Forward pass for rejected responses
+            _, rejected_log_probs = self._forward_micro_batch(
+                micro_batch=rejected_micro, temperature=temperature)
+            
+            # Get response masks
+            chosen_response_length = chosen_micro['responses'].size(1)
+            rejected_response_length = rejected_micro['responses'].size(1)
+            
+            chosen_mask = chosen_micro['attention_mask'][:, -chosen_response_length:]
+            rejected_mask = rejected_micro['attention_mask'][:, -rejected_response_length:]
+            
+            # Get reference log probs if available
+            if has_ref_logprobs:
+                # These should be detached to avoid backprop through reference model
+                ref_chosen_idx = [i for i, idx in enumerate(chosen_indices)] if self.config.use_dynamic_bsz else None
+                ref_rejected_idx = [i for i, idx in enumerate(rejected_indices)] if self.config.use_dynamic_bsz else None
+                
+                ref_chosen_logps = data.batch['ref_chosen_logprobs'][ref_chosen_idx].detach() if ref_chosen_idx else data.batch['ref_chosen_logprobs'].detach()
+                ref_rejected_logps = data.batch['ref_rejected_logprobs'][ref_rejected_idx].detach() if ref_rejected_idx else data.batch['ref_rejected_logprobs'].detach()
+            else:
+                # If no reference log probs, use policy's own log probs (detached)
+                ref_chosen_logps = chosen_log_probs.detach()
+                ref_rejected_logps = rejected_log_probs.detach()
+            
+            # Compute DPO loss
+            from verl.trainer.dpo import dpo_loss
+            loss, advantages = dpo_loss(
+                policy_chosen_logps=chosen_log_probs,
+                policy_rejected_logps=rejected_log_probs,
+                reference_chosen_logps=ref_chosen_logps,
+                reference_rejected_logps=ref_rejected_logps,
+                beta=self.config.dpo_beta
+            )
+            
+            # Scale loss based on batch size
+            if self.config.use_dynamic_bsz:
+                # Scale by relative batch size
+                batch_size_ratio = (len(chosen_micro) / self.config.dpo_mini_batch_size)
+                loss = loss * batch_size_ratio
+            else:
+                # Scale by gradient accumulation steps
+                gradient_accumulation = len(chosen_micro_batches)
+                loss = loss / gradient_accumulation
+            
+            # Backward pass
+            loss.backward()
+            
+            # Track metrics
+            total_loss += loss.detach().item()
+            
+        # Apply gradients
+        if self.config.grad_clip is not None:
+            if isinstance(self.actor_module, FSDP):
+                grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
+        else:
+            grad_norm = torch.tensor(0.0)
+        
+        self.actor_optimizer.step()
+        self.actor_optimizer.zero_grad()
+        
+        # Return metrics
+        metrics['dpo/loss'] = total_loss
+        metrics['dpo/grad_norm'] = grad_norm.detach().item()
+        
+        return metrics

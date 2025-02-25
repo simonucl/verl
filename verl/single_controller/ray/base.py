@@ -429,12 +429,16 @@ def create_colocated_worker_cls(class_dict: dict[str, RayClassWithInitArgs]):
         if worker_cls == None:
             worker_cls = cls.cls.__ray_actor_class__.__base__
         else:
-            assert worker_cls == cls.cls.__ray_actor_class__.__base__, \
-                'the worker class should be the same when share the same process'
+            if worker_cls != cls.cls.__ray_actor_class__.__base__:
+                # Take the base class that's common to both worker classes
+                worker_cls = worker_cls.__mro__[1]  # Get the first common parent class
+                assert worker_cls == cls.cls.__ray_actor_class__.__base__, \
+                    f'the worker class should be the same when share the same process: {worker_cls} != {cls.cls.__ray_actor_class__.__base__}'
         cls_dict[key] = cls.cls
         init_args_dict[key] = {'args': cls.args, 'kwargs': cls.kwargs}
 
     assert cls_dict.keys() == init_args_dict.keys()
+    print(f'cls_dict: {cls_dict}')
 
     # TODO: create a class with customizable name
     class WorkerDict(worker_cls):
