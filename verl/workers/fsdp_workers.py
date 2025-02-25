@@ -399,6 +399,12 @@ class ActorRolloutRefWorker(Worker):
 
         torch.cuda.empty_cache()
 
+    def eval_model(self):
+        if self._is_actor:
+            self.actor_module_fsdp.eval()
+        if self._is_ref:
+            self.ref_module_fsdp.eval()
+
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_actor(self, data: DataProto):
         data = data.to('cuda')

@@ -36,7 +36,6 @@ install_requires = [
   'ray>=2.10',
   'tensordict<0.6',
   'transformers',
-  'vllm<=0.6.3',
   'wandb',
 ]
 

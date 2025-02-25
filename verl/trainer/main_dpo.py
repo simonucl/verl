@@ -37,7 +37,7 @@ import wandb
 import transformers
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
+from verl.single_controller.ray import RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
@@ -243,12 +243,6 @@ class RayDPOTrainer(object):
                 raise ValueError(f"[{name}] You have set both '{name}.micro_batch_size' AND "
                                  f"'{name}.micro_batch_size_per_gpu'. Please use only one.")
 
-        # Check reward model micro-batch size conflicts if enabled
-        if config.reward_model.enable and not config.reward_model.use_dynamic_bsz:
-            check_mutually_exclusive(config.reward_model.micro_batch_size, 
-                                     config.reward_model.micro_batch_size_per_gpu,
-                                     "reward_model")
-
         if config.data.get('val_batch_size', None) is not None:
             print(
                 f"WARNING: val_batch_size is deprecated. Validation datasets are sent to inference engines as a whole batch."
@@ -280,29 +274,15 @@ class RayDPOTrainer(object):
                                            collate_fn=collate_fn,
                                            sampler=sampler)
 
-        # Create validation dataloader
-        self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
-                                       tokenizer=self.tokenizer,
-                                       prompt_key=self.config.data.prompt_key,
-                                       max_prompt_length=self.config.data.max_prompt_length,
-                                       filter_prompts=True,
-                                       return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                       truncation='error')
-        
-        self.val_dataloader = DataLoader(
-            dataset=self.val_dataset,
-            # Validation datasets are sent to inference engines as a whole batch,
-            # which will schedule the memory themselves.
-            batch_size=len(self.val_dataset),
-            shuffle=False,
-            drop_last=False,
-            collate_fn=collate_fn)
+        # Skip validation dataloader creation since we don't have validation data
+        self.val_dataset = None
+        self.val_dataloader = None
 
         assert len(self.train_dataloader) >= 1
-        assert len(self.val_dataloader) >= 1
+        # assert len(self.val_dataloader) >= 1  # Remove this assertion
 
         print(f'Size of train dataloader: {len(self.train_dataloader)}')
-        print(f'Size of val dataloader: {len(self.val_dataloader)}')
+        # print(f'Size of val dataloader: {len(self.val_dataloader)}')  # Remove this line
 
         # Inject total_training_steps to actor optim_config
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
@@ -497,7 +477,13 @@ class RayDPOTrainer(object):
         # Initialize WorkerGroups
         all_wg = {}
         self.wg_dicts = []
+        # Remove any resource pools with empty class dictionaries
+        empty_pools = [pool for pool, class_dict in self.resource_pool_to_cls.items() if not class_dict]
+        for pool in empty_pools:
+            self.resource_pool_to_cls.pop(pool)
+
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
+            print(f'class_dict: {class_dict}')
             worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
             wg_dict = self.ray_worker_group_cls(resource_pool=resource_pool, ray_cls_with_init=worker_dict_cls)
             spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
@@ -687,7 +673,6 @@ class RayDPOTrainer(object):
                     output_gen_batch = unpad_dataproto(output_gen_batch_padded, pad_size=pad_size)
                     
                     # Merge original batch with generated outputs
-                    # TODO: check if this is correct
                     batch = batch.union(output_gen_batch)
                 
                 # Compute rewards/scores for generated sequences
@@ -766,15 +751,14 @@ class RayDPOTrainer(object):
                     if 'wandb' in self.config.trainer.logger:
                         wandb.log(metrics, step=self.global_steps)
                 
-                # Run validation
-                if self.global_steps % self.config.trainer.val_check_interval == 0:
-                    print("Running validation...")
-                    val_metrics = self._validate()
-                    metrics.update(val_metrics)
-                    
-                    # Log validation metrics
-                    if 'wandb' in self.config.trainer.logger:
-                        wandb.log(val_metrics, step=self.global_steps)
+                # Skip validation since we don't have validation data
+                # if self.global_steps % self.config.trainer.val_check_interval == 0:
+                #     print("Running validation...")
+                #     val_metrics = self._validate()
+                #     
+                #     # Log validation metrics
+                #     if 'wandb' in self.config.trainer.logger:
+                #         wandb.log(val_metrics, step=self.global_steps)
                 
                 # Save checkpoint
                 if self.global_steps % self.config.trainer.save_every_n_steps == 0:
@@ -927,8 +911,16 @@ def main(config):
     if not ray.is_initialized():
         ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
     
-    # Setup resource pool and worker mapping
-    resource_pool_manager = ResourcePoolManager(config)
+    global_pool_id = 'global_pool'
+    resource_pool_spec = {
+        global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+    }
+    mapping = {
+        Role.ActorRollout: global_pool_id,
+        Role.RefPolicy: global_pool_id,
+        Role.RewardModel: global_pool_id,
+    }
+    resource_pool_manager = ResourcePoolManager(resource_pool_spec, mapping)
     
     # Define worker types for each role
     role_worker_mapping = {
@@ -942,8 +934,8 @@ def main(config):
     
     # Initialize tokenizer
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-        config.actor_rollout.actor.model_name_or_path,
-        use_fast=config.actor_rollout.actor.get('use_fast_tokenizer', True),
+        config.actor_rollout.model.path,
+        use_fast=config.actor_rollout.actor.use_fast_tokenizer,
         padding_side='left'
     )
     

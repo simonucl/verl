@@ -1,0 +1,112 @@
+data:
+  tokenizer: null
+  train_files: ~/data/rlhf/gsm8k/train.parquet
+  val_files: ~/data/rlhf/gsm8k/test.parquet
+  prompt_key: prompt
+  max_prompt_length: 512
+  max_response_length: 512
+  train_batch_size: 1024
+  shuffle: True
+  seed: null
+  return_raw_chat: False
+
+actor_rollout:
+  hybrid_engine: True
+  model:
+    path: ~/models/deepseek-llm-7b-chat
+    external_lib: null
+    override_config: {}
+    enable_gradient_checkpointing: True
+    use_remove_padding: False
+  actor:
+    strategy: fsdp
+    use_fast_tokenizer: True
+    dpo_beta: 0.1  # Temperature parameter for DPO loss
+    dpo_top_k_pairs: 1  # Number of top/bottom pairs to create for each prompt
+    dpo_micro_batch_size_per_gpu: null
+    use_dynamic_bsz: False
+    grad_clip: 1.0
+    max_grad_norm: 1.0
+    shuffle: False
+    ulysses_sequence_parallel_size: 1
+    optim:
+      lr: 5e-7
+      lr_warmup_steps_ratio: 0.03
+      min_lr_ratio: 0.1
+      warmup_style: cosine
+      weight_decay: 0.0
+      scheduler_type: null
+      warmup_steps: null
+      total_training_steps: -1  # Will be overridden during runtime
+    fsdp_config:
+      wrap_policy:
+        min_num_params: 0
+      param_offload: False
+      optimizer_offload: False
+      fsdp_size: -1
+  rollout:
+    name: vllm
+    temperature: 0.7
+    top_k: -1
+    top_p: 0.9
+    prompt_length: ${data.max_prompt_length}
+    response_length: ${data.max_response_length}
+    max_new_tokens: null
+    dtype: bfloat16
+    gpu_memory_utilization: 0.5
+    ignore_eos: False
+    enforce_eager: True
+    free_cache_engine: True
+    load_format: dummy_dtensor
+    tensor_model_parallel_size: 1
+    max_num_batched_tokens: 8192
+    max_num_seqs: 1024
+    log_prob_micro_batch_size_per_gpu: 8
+    disable_log_stats: True
+    enable_chunked_prefill: True
+    do_sample: True
+    n: 4  # Generate multiple responses per prompt for pairwise comparison
+
+reward_model:
+  enable: False
+  strategy: fsdp
+  model:
+    input_tokenizer: ${actor_rollout.model.path}
+    path: ~/models/reward-model-path
+    external_lib: ${actor_rollout.model.external_lib}
+    use_remove_padding: False
+    trust_remote_code: false
+    fsdp_config:
+      min_num_params: 0
+      param_offload: False
+      fsdp_size: -1
+  micro_batch_size_per_gpu: null
+  max_length: null
+  ulysses_sequence_parallel_size: 1
+  use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
+  forward_max_token_len_per_gpu: 32768
+  reward_manager: naive
+
+trainer:
+  total_epochs: 3
+  total_training_steps: null
+  project_name: verl_dpo
+  experiment_name: dpo_training
+  logger: ['console', 'wandb']
+  val_generations_to_log_to_wandb: 10
+  log_every_n_steps: 10
+  val_check_interval: 100
+  save_every_n_steps: 500
+  nnodes: 1
+  n_gpus_per_node: 8
+  skip_steps: 0
+  resume_mode: auto
+  resume_from_path: False
+  remove_previous_ckpt_in_save: False
+  del_local_ckpt_after_load: False
+  default_hdfs_dir: null
+  default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name} 
+
+wandb:
+  project: null
+  name: null

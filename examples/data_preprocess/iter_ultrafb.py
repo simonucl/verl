@@ -74,4 +74,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
 
-    generate_rl_dataset(args.hdfs_dir, os.path.join(args.local_dir, args.split))
+    generate_rl_dataset(args.hdfs_dir, os.path.join(args.local_dir, 'train'))

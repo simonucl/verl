@@ -4,6 +4,8 @@
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 export TOKENIZERS_PARALLELISM=true
 export NCCL_DEBUG=WARN
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+
 
 # Create output directory
 OUTPUT_DIR="./dpo_qwen_2.5_instruct_3b"
@@ -21,8 +23,10 @@ python verl/trainer/main_dpo.py \
   trainer.val_generations_to_log_to_wandb=10 \
   trainer.logger=["wandb"] \
   trainer.remove_previous_ckpt_in_save=true \
+  trainer.resume_mode="disable" \
   \
-  actor_rollout.actor.model_name_or_path="Qwen/Qwen2.5-Instruct-3B" \
+  actor_rollout.hybrid_engine=true \
+  actor_rollout.model.path="Qwen/Qwen2.5-3B-Instruct" \
   actor_rollout.actor.use_fast_tokenizer=true \
   actor_rollout.actor.dpo_beta=0.1 \
   actor_rollout.actor.dpo_top_k_pairs=1 \
@@ -37,9 +41,9 @@ python verl/trainer/main_dpo.py \
   actor_rollout.rollout.temperature=0.7 \
   actor_rollout.rollout.top_p=0.9 \
   actor_rollout.rollout.max_new_tokens=1024 \
+  actor_rollout.rollout.n=8 \
   \
-  data.train_files=~/data/iter_ultrafb/train.parquet \
-  data.val_files=~/data/iter_ultrafb/test.parquet \
+  data.train_files=["/root/data/iter_ultrafb/train/train.parquet"] \
   data.prompt_key="prompt" \
   data.max_prompt_length=1024 \
   data.train_batch_size=16 \
@@ -47,7 +51,9 @@ python verl/trainer/main_dpo.py \
   data.seed=42 \
   data.return_raw_chat=false \
   \
-  reward_model.enable=false \
+  reward_model.enable=true \
+  reward_model.model.path="RLHFlow/ArmoRM-Llama3-8B-v0.1" \
+  reward_model.model.trust_remote_code=true \
   \
   wandb.project="qwen-2.5-dpo-training" \
   wandb.name="qwen-2.5-instruct-3b-dpo"
