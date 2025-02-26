@@ -8,7 +8,7 @@ export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 
 # Create output directory
-OUTPUT_DIR="./dpo_qwen_2.5_instruct_3b"
+OUTPUT_DIR="./dpo_qwen_2.5_instruct_7b"
 mkdir -p $OUTPUT_DIR
 
 # Run DPO training
@@ -21,13 +21,13 @@ python verl/trainer/main_dpo.py \
   trainer.val_check_interval=100 \
   trainer.save_every_n_steps=500 \
   trainer.val_generations_to_log_to_wandb=10 \
-  trainer.project_name="qwen-2.5-3b-dpo" \
+  trainer.project_name="qwen-2.5-7b-dpo" \
   trainer.experiment_name="iterative-dpo" \
   trainer.remove_previous_ckpt_in_save=true \
   trainer.resume_mode="disable" \
   \
   actor_rollout.hybrid_engine=true \
-  actor_rollout.model.path="Qwen/Qwen2.5-3B-Instruct" \
+  actor_rollout.model.path="Qwen/Qwen2.5-7B-Instruct" \
   actor_rollout.actor.use_fast_tokenizer=true \
   actor_rollout.actor.dpo_beta=0.1 \
   actor_rollout.actor.dpo_top_k_pairs=1 \

@@ -310,7 +310,7 @@ class DataParallelPPOActor(BasePPOActor):
         
         # Split into micro-batches for processing
         if self.config.use_dynamic_bsz:
-            max_token_len = self.config.dpo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+            max_token_len = self.config.max_length * self.ulysses_sequence_parallel_size
             chosen_micro_batches, chosen_indices = rearrange_micro_batches(
                 batch=chosen_batch.batch, max_token_len=max_token_len)
             rejected_micro_batches, rejected_indices = rearrange_micro_batches(

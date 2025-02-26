@@ -18,6 +18,7 @@ The main entry point to run the PPO algorithm
 import logging
 import os
 import warnings
+import numpy as np
 
 import torch
 import torch.distributed
@@ -1034,6 +1035,8 @@ class RewardModelWorker(Worker):
         for i in range(data.batch.batch_size[0]):
             # extract raw prompt
             chat: list = data.non_tensor_batch['raw_prompt'][i]
+            if isinstance(chat, np.ndarray):
+                chat = chat.tolist()
 
             # extract response
             response_ids = data.batch['responses'][i]

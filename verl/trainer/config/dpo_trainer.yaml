@@ -26,6 +26,7 @@ actor_rollout:
     dpo_micro_batch_size_per_gpu: null
     dpo_micro_batch_size: null
     use_dynamic_bsz: True
+    dpo_mini_batch_size: 64
     grad_clip: 1.0
     max_grad_norm: 1.0
     shuffle: False
@@ -56,7 +57,7 @@ actor_rollout:
     response_length: ${data.max_response_length}
     max_new_tokens: null
     dtype: bfloat16
-    gpu_memory_utilization: 0.7
+    gpu_memory_utilization: 0.45
     ignore_eos: False
     enforce_eager: True
     free_cache_engine: True
@@ -129,7 +130,3 @@ trainer:
   del_local_ckpt_after_load: False
   default_hdfs_dir: null
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name} 
-
-wandb:
-  project: null
-  name: null

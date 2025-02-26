@@ -48,6 +48,7 @@ from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role, WorkerType
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, RewardModelWorker
 from verl.utils.fsdp_utils import offload_fsdp_optimizer, offload_fsdp_model_to_cpu, load_fsdp_optimizer, \
     load_fsdp_model_to_gpu
+from verl.utils.tracking import Tracking
 
 def generate_pairwise_data(data: DataProto, score_key: str = 'token_level_scores', top_k: int = 1) -> DataProto:
     """
@@ -629,6 +630,11 @@ class RayDPOTrainer(object):
     def train(self):
         """Main training loop for DPO"""
         self.init_workers()
+
+        logger = Tracking(project_name=self.config.trainer.project_name,
+                          experiment_name=self.config.trainer.experiment_name,
+                          default_backend=self.config.trainer.logger,
+                          config=OmegaConf.to_container(self.config, resolve=True))
         
         # Initialize global step counter
         self.global_steps = 0
@@ -742,6 +748,7 @@ class RayDPOTrainer(object):
                     # # Update policy, TODO check this dpo_update function
                     # dpo_metrics_padded = self.actor_rollout_wg.dpo_update(dpo_batch_padded)
                     # dpo_metrics = unpad_dataproto(dpo_metrics_padded, pad_size=pad_size)
+                    pair_batch.meta_info['temperature'] = self.config.actor_rollout.rollout.temperature
                     actor_output = self.actor_rollout_wg.dpo_update_actor(pair_batch)
                 
                     metrics = actor_output.meta_info['metrics']
@@ -855,8 +862,6 @@ class DPOActorRolloutWorker(ActorRolloutRefWorker):
             # perform training
             with Timer(name='update_dpo_policy', logger=None) as timer:
                 metrics = self.actor.update_dpo_policy(data=data)
-            delta_time = timer.last
-            global_num_tokens = data.meta_info['global_token_num']
 
             self.actor_lr_scheduler.step()
             lr = self.actor_lr_scheduler.get_last_lr()[0]
