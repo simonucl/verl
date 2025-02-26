@@ -46,6 +46,8 @@ from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role, WorkerType
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, RewardModelWorker
+from verl.utils.fsdp_utils import offload_fsdp_optimizer, offload_fsdp_model_to_cpu, load_fsdp_optimizer, \
+    load_fsdp_model_to_gpu
 
 def generate_pairwise_data(data: DataProto, score_key: str = 'token_level_scores', top_k: int = 1) -> DataProto:
     """
@@ -200,33 +202,6 @@ def reduce_metrics(metrics: dict):
     for key, val in metrics.items():
         metrics[key] = np.mean(val)
     return metrics
-
-def dpo_loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps, beta):
-    """
-    Compute DPO loss as described in the paper "Direct Preference Optimization: 
-    Your Language Model is Secretly a Reward Model"
-    
-    Args:
-        policy_chosen_logps: Log probs from policy model for chosen responses
-        policy_rejected_logps: Log probs from policy model for rejected responses
-        reference_chosen_logps: Log probs from reference model for chosen responses
-        reference_rejected_logps: Log probs from reference model for rejected responses
-        beta: Temperature parameter for the DPO loss
-        
-    Returns:
-        DPO loss and advantages
-    """
-    # Compute the log ratios between policy and reference model
-    chosen_ratio = policy_chosen_logps - reference_chosen_logps
-    rejected_ratio = policy_rejected_logps - reference_rejected_logps
-    
-    # Compute the implied reward
-    logits = beta * (chosen_ratio - rejected_ratio)
-    
-    # Compute the DPO loss (negative log sigmoid of the logits)
-    losses = -F.logsigmoid(logits)
-    
-    return losses.mean(), logits
 
 class RayDPOTrainer(object):
     """
@@ -761,26 +736,22 @@ class RayDPOTrainer(object):
                 
                 # Update policy using DPO
                 with _timer('dpo_update', timing_raw):
-                    # Prepare batch for DPO update
-                    dpo_batch_padded, pad_size = pad_dataproto_to_divisor(pair_batch, self.actor_rollout_wg.world_size)
+                    # # Prepare batch for DPO update
+                    # dpo_batch_padded, pad_size = pad_dataproto_to_divisor(pair_batch, self.actor_rollout_wg.world_size)
                     
-                    # Update policy, TODO check this dpo_update function
-                    dpo_metrics_padded = self.actor_rollout_wg.dpo_update(dpo_batch_padded)
-                    dpo_metrics = unpad_dataproto(dpo_metrics_padded, pad_size=pad_size)
-                    
-                    # Add DPO metrics
-                    for k, v in dpo_metrics.batch.items():
-                        if isinstance(v, torch.Tensor):
-                            metrics[f'dpo/{k}'] = v.mean().item()
+                    # # Update policy, TODO check this dpo_update function
+                    # dpo_metrics_padded = self.actor_rollout_wg.dpo_update(dpo_batch_padded)
+                    # dpo_metrics = unpad_dataproto(dpo_metrics_padded, pad_size=pad_size)
+                    actor_output = self.actor_rollout_wg.dpo_update_actor(pair_batch)
                 
+                    metrics = actor_output.meta_info['metrics']
                 # Compute additional metrics
-                with _timer('compute_metrics', timing_raw):
-                    dpo_metrics = self.compute_dpo_metrics(pair_batch)
-                    metrics.update(dpo_metrics)
-                    
-                    # Add timing metrics
-                    timing_metrics = compute_timing_metrics(batch, timing_raw)
-                    metrics.update(timing_metrics)
+                dpo_metrics = self.compute_dpo_metrics(pair_batch)
+                metrics.update(dpo_metrics)
+                
+                # Add timing metrics
+                timing_metrics = compute_timing_metrics(batch, timing_raw)
+                metrics.update(timing_metrics)
                 
                 # Log metrics
                 if self.global_steps % self.config.trainer.log_every_n_steps == 0:
@@ -819,62 +790,91 @@ class DPOActorRolloutWorker(ActorRolloutRefWorker):
         self.lr_scheduler = None
         self.beta = config.actor.get('dpo_beta', 0.1)  # KL penalty coefficient
         
-    def compute_logprobs(self, batch: DataProto):
-        """Compute log probabilities for sequences"""
-        input_ids = batch.batch['input_ids']
-        attention_mask = batch.batch['attention_mask']
+    # def compute_logprobs(self, batch: DataProto):
+    #     """Compute log probabilities for sequences"""
+    #     input_ids = batch.batch['input_ids']
+    #     attention_mask = batch.batch['attention_mask']
         
-        # Forward pass with no loss computation
-        with torch.set_grad_enabled(self.model.training):
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                return_dict=True
-            )
+    #     # Forward pass with no loss computation
+    #     with torch.set_grad_enabled(self.model.training):
+    #         outputs = self.model(
+    #             input_ids=input_ids,
+    #             attention_mask=attention_mask,
+    #             return_dict=True
+    #         )
             
-            # Extract token-level log probabilities
-            logits = outputs.logits
-            log_probs = F.log_softmax(logits, dim=-1)
+    #         # Extract token-level log probabilities
+    #         logits = outputs.logits
+    #         log_probs = F.log_softmax(logits, dim=-1)
             
-            # Get the log probs of the next tokens
-            shifted_input_ids = input_ids[:, 1:].clone()
-            shifted_log_probs = log_probs[:, :-1].gather(
-                dim=-1, 
-                index=shifted_input_ids.unsqueeze(-1)
-            ).squeeze(-1)
+    #         # Get the log probs of the next tokens
+    #         shifted_input_ids = input_ids[:, 1:].clone()
+    #         shifted_log_probs = log_probs[:, :-1].gather(
+    #             dim=-1, 
+    #             index=shifted_input_ids.unsqueeze(-1)
+    #         ).squeeze(-1)
             
-            # Create mask for response tokens only
-            response_mask = torch.zeros_like(shifted_log_probs)
+    #         # Create mask for response tokens only
+    #         response_mask = torch.zeros_like(shifted_log_probs)
             
-            # For each sequence, identify response tokens
-            for i, length in enumerate(batch.batch.get('input_token_len', [])):
-                if length < shifted_log_probs.shape[1]:
-                    response_mask[i, length:] = 1.0
+    #         # For each sequence, identify response tokens
+    #         for i, length in enumerate(batch.batch.get('input_token_len', [])):
+    #             if length < shifted_log_probs.shape[1]:
+    #                 response_mask[i, length:] = 1.0
             
-            # If input_token_len not provided, use attention mask
-            if 'input_token_len' not in batch.batch:
-                response_mask = attention_mask[:, 1:].float()
+    #         # If input_token_len not provided, use attention mask
+    #         if 'input_token_len' not in batch.batch:
+    #             response_mask = attention_mask[:, 1:].float()
             
-            # Mask out prompt tokens, keeping only response tokens
-            masked_log_probs = shifted_log_probs * response_mask
+    #         # Mask out prompt tokens, keeping only response tokens
+    #         masked_log_probs = shifted_log_probs * response_mask
             
-            # Sum log probs for the entire sequence
-            seq_log_probs = masked_log_probs.sum(dim=1)
+    #         # Sum log probs for the entire sequence
+    #         seq_log_probs = masked_log_probs.sum(dim=1)
             
-            # Add to batch
-            batch.batch['logprobs'] = seq_log_probs
+    #         # Add to batch
+    #         batch.batch['logprobs'] = seq_log_probs
             
-            return batch
+    #         return batch
     
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
-    def dpo_update(self, batch: DataProto):
-        """
-        Update model using DPO loss with pairwise data.
-        This is the implementation of the method called in the training loop.
-        """
-        # Simply call the actor's update_dpo_policy method
-        metrics = self.actor.update_dpo_policy(batch)
-        return DataProto(meta_info=metrics)
+    def dpo_update_actor(self, data: DataProto):
+        data = data.to('cuda')
+
+        assert self._is_actor
+
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        if self._is_offload_optimizer:
+            load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=torch.cuda.current_device())
+
+        data.batch = data.batch.cuda()
+
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            # perform training
+            with Timer(name='update_dpo_policy', logger=None) as timer:
+                metrics = self.actor.update_dpo_policy(data=data)
+            delta_time = timer.last
+            global_num_tokens = data.meta_info['global_token_num']
+
+            self.actor_lr_scheduler.step()
+            lr = self.actor_lr_scheduler.get_last_lr()[0]
+            metrics['actor/lr'] = lr
+
+            # TODO: here, we should return all metrics
+            output = DataProto(meta_info={'metrics': metrics})
+
+            output = self.ulysses_sharding_manager.postprocess_data(data=output)
+            output = output.to('cpu')
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+        torch.cuda.empty_cache()
+        return output
+        
 
 @hydra.main(config_path='config', config_name='dpo_trainer', version_base=None)
 def main(config):
