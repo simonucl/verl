@@ -346,7 +346,7 @@ class DataParallelPPOActor(BasePPOActor):
             chosen_mask = chosen_micro['attention_mask'][:, -chosen_response_length:]
             rejected_mask = rejected_micro['attention_mask'][:, -rejected_response_length:]
             
-            # Get reference log probs if available
+            # Get reference log probs if available, TODO there's a mismatch size for ref_chosen_logprobs and ref_rejected_logprobs
             if has_ref_logprobs:
                 # These should be detached to avoid backprop through reference model
                 ref_chosen_idx = [i for i, idx in enumerate(chosen_indices)] if self.config.use_dynamic_bsz else None

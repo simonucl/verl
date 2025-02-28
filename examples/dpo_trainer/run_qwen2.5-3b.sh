@@ -31,7 +31,7 @@ python verl/trainer/main_dpo.py \
   actor_rollout.actor.use_fast_tokenizer=true \
   actor_rollout.actor.dpo_beta=0.1 \
   actor_rollout.actor.dpo_top_k_pairs=1 \
-  actor_rollout.actor.dpo_micro_batch_size_per_gpu=4 \
+  actor_rollout.actor.dpo_micro_batch_size_per_gpu=16 \
   actor_rollout.actor.max_grad_norm=1.0 \
   \
   actor_rollout.actor.optim.lr=5e-7 \
@@ -47,7 +47,7 @@ python verl/trainer/main_dpo.py \
   data.train_files=["/root/data/iter_ultrafb/train/train.parquet"] \
   data.prompt_key="prompt" \
   data.max_prompt_length=1024 \
-  data.train_batch_size=16 \
+  data.train_batch_size=64 \
   data.shuffle=true \
   data.seed=42 \
   data.return_raw_chat=true \
