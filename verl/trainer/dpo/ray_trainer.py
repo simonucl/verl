@@ -738,7 +738,7 @@ class RayDPOTrainer(object):
                     # # Prepare batch for DPO update
                     # dpo_batch_padded, pad_size = pad_dataproto_to_divisor(pair_batch, self.actor_rollout_wg.world_size)
                     
-                    # # Update policy, TODO check this dpo_update function
+                    # # Update policy
                     # dpo_metrics_padded = self.actor_rollout_wg.dpo_update(dpo_batch_padded)
                     # dpo_metrics = unpad_dataproto(dpo_metrics_padded, pad_size=pad_size)
                     pair_batch.meta_info['temperature'] = self.config.actor_rollout.rollout.temperature

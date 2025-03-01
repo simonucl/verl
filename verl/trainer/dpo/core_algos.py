@@ -16,10 +16,10 @@ def dpo_loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps,
         DPO loss and advantages
     """
     # Compute the log ratios between policy and reference model
-    print(f'Shape of policy_chosen_logps: {policy_chosen_logps.shape}')
-    print(f'Shape of reference_chosen_logps: {reference_chosen_logps.shape}')
-    print(f'Shape of policy_rejected_logps: {policy_rejected_logps.shape}')
-    print(f'Shape of reference_rejected_logps: {reference_rejected_logps.shape}')
+    # print(f'Shape of policy_chosen_logps: {policy_chosen_logps.shape}')
+    # print(f'Shape of reference_chosen_logps: {reference_chosen_logps.shape}')
+    # print(f'Shape of policy_rejected_logps: {policy_rejected_logps.shape}')
+    # print(f'Shape of reference_rejected_logps: {reference_rejected_logps.shape}')
     chosen_ratio = policy_chosen_logps - reference_chosen_logps
     rejected_ratio = policy_rejected_logps - reference_rejected_logps
     

@@ -23,10 +23,10 @@ actor_rollout:
     use_fast_tokenizer: True
     dpo_beta: 0.1  # Temperature parameter for DPO loss
     dpo_top_k_pairs: 1  # Number of top/bottom pairs to create for each prompt
-    dpo_micro_batch_size_per_gpu: null
-    dpo_micro_batch_size: null
+    dpo_micro_batch_size_per_gpu: 1
+    dpo_micro_batch_size: 8
     use_dynamic_bsz: True
-    dpo_mini_batch_size: 64
+    dpo_mini_batch_size: 8
     grad_clip: 1.0
     max_grad_norm: 1.0
     shuffle: False
@@ -82,7 +82,7 @@ actor_rollout:
       min_num_params: 0
       param_offload: False
       fsdp_size: -1
-    micro_batch_size_per_gpu: null
+    micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu}
     max_length: ${actor_rollout.actor.max_length}
     ulysses_sequence_parallel_size: 1
     log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
@@ -103,9 +103,9 @@ reward_model:
       min_num_params: 0
       param_offload: False
       fsdp_size: -1
-  micro_batch_size_per_gpu: null
-  micro_batch_size: null # Placeholder for ppo compatibility
-  max_length: null
+  micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu}
+  micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size} # Placeholder for ppo compatibility
+  max_length: ${actor_rollout.actor.max_length}
   ulysses_sequence_parallel_size: 1
   use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
   forward_max_token_len_per_gpu: 32768

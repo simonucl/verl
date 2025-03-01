@@ -298,27 +298,30 @@ class DataParallelPPOActor(BasePPOActor):
         # Get temperature from meta_info
         temperature = data.meta_info['temperature']
         
+        # TODO currently we don't support dynamic bsz for DPO, support soon
+        micro_batch_size = self.config.dpo_micro_batch_size_per_gpu
+        micro_batches = data.batch.split(micro_batch_size)
         # Extract chosen and rejected data
-        chosen_batch = data.select_keys_with_prefix('chosen_')
-        chosen_batch = chosen_batch.rename_keys_with_prefix('chosen_', '')
+        # chosen_batch = data.select_keys_with_prefix('chosen_')
+        # chosen_batch = chosen_batch.rename_keys_with_prefix('chosen_', '')
         
-        rejected_batch = data.select_keys_with_prefix('rejected_')
-        rejected_batch = rejected_batch.rename_keys_with_prefix('rejected_', '')
+        # rejected_batch = data.select_keys_with_prefix('rejected_')
+        # rejected_batch = rejected_batch.rename_keys_with_prefix('rejected_', '')
         
         # Get reference log probs if available
         has_ref_logprobs = 'ref_chosen_logprobs' in data.batch and 'ref_rejected_logprobs' in data.batch
         
-        # Split into micro-batches for processing
-        if self.config.use_dynamic_bsz:
-            max_token_len = self.config.max_length * self.ulysses_sequence_parallel_size
-            chosen_micro_batches, chosen_indices = rearrange_micro_batches(
-                batch=chosen_batch.batch, max_token_len=max_token_len)
-            rejected_micro_batches, rejected_indices = rearrange_micro_batches(
-                batch=rejected_batch.batch, max_token_len=max_token_len)
-        else:
-            micro_batch_size = self.config.dpo_micro_batch_size_per_gpu
-            chosen_micro_batches = chosen_batch.batch.split(micro_batch_size)
-            rejected_micro_batches = rejected_batch.batch.split(micro_batch_size)
+        # Split into micro-batches for processing, TODO can't use dynamic bsz here since will cause mismatch size for ref_chosen_logprobs and ref_rejected_logprobs
+        # if self.config.use_dynamic_bsz:
+        #     max_token_len = self.config.max_length * self.ulysses_sequence_parallel_size
+        #     chosen_micro_batches, chosen_indices = rearrange_micro_batches(
+        #         batch=chosen_batch.batch, max_token_len=max_token_len)
+        # #     rejected_micro_batches, rejected_indices = rearrange_micro_batches(
+        # #         batch=rejected_batch.batch, max_token_len=max_token_len)
+        # # else:
+        # micro_batch_size = self.config.dpo_micro_batch_size_per_gpu
+        # chosen_micro_batches = chosen_batch.batch.split(micro_batch_size)
+        # rejected_micro_batches = rejected_batch.batch.split(micro_batch_size)
         
         # Zero gradients before processing batches
         self.actor_optimizer.zero_grad()
@@ -327,7 +330,16 @@ class DataParallelPPOActor(BasePPOActor):
         total_loss = 0
         
         # Process each micro-batch
-        for chosen_micro, rejected_micro in zip(chosen_micro_batches, rejected_micro_batches):
+        for micro_batch in micro_batches:
+            micro_data = DataProto(batch=micro_batch)
+
+            chosen_micro = micro_data.select_keys_with_prefix('chosen_')
+            chosen_micro = chosen_micro.rename_keys_with_prefix('chosen_', '')
+            chosen_micro = chosen_micro.batch
+            rejected_micro = micro_data.select_keys_with_prefix('rejected_')
+            rejected_micro = rejected_micro.rename_keys_with_prefix('rejected_', '')
+            rejected_micro = rejected_micro.batch
+            
             chosen_micro = chosen_micro.cuda()
             rejected_micro = rejected_micro.cuda()
             
@@ -343,17 +355,19 @@ class DataParallelPPOActor(BasePPOActor):
             chosen_response_length = chosen_micro['responses'].size(1)
             rejected_response_length = rejected_micro['responses'].size(1)
             
-            chosen_mask = chosen_micro['attention_mask'][:, -chosen_response_length:]
-            rejected_mask = rejected_micro['attention_mask'][:, -rejected_response_length:]
+            # chosen_mask = chosen_micro['attention_mask'][:, -chosen_response_length:]
+            # rejected_mask = rejected_micro['attention_mask'][:, -rejected_response_length:]
             
             # Get reference log probs if available, TODO there's a mismatch size for ref_chosen_logprobs and ref_rejected_logprobs
             if has_ref_logprobs:
                 # These should be detached to avoid backprop through reference model
-                ref_chosen_idx = [i for i, idx in enumerate(chosen_indices)] if self.config.use_dynamic_bsz else None
-                ref_rejected_idx = [i for i, idx in enumerate(rejected_indices)] if self.config.use_dynamic_bsz else None
+                # ref_chosen_idx = [i for i, idx in enumerate(chosen_indices)] if self.config.use_dynamic_bsz else None
+                # ref_rejected_idx = [i for i, idx in enumerate(rejected_indices)] if self.config.use_dynamic_bsz else None
                 
-                ref_chosen_logps = data.batch['ref_chosen_logprobs'][ref_chosen_idx].detach() if ref_chosen_idx else data.batch['ref_chosen_logprobs'].detach()
-                ref_rejected_logps = data.batch['ref_rejected_logprobs'][ref_rejected_idx].detach() if ref_rejected_idx else data.batch['ref_rejected_logprobs'].detach()
+                # ref_chosen_logps = data.batch['ref_chosen_logprobs'][ref_chosen_idx].detach() if ref_chosen_idx else data.batch['ref_chosen_logprobs'].detach()
+                # ref_rejected_logps = data.batch['ref_rejected_logprobs'][ref_rejected_idx].detach() if ref_rejected_idx else data.batch['ref_rejected_logprobs'].detach()
+                ref_chosen_logps = micro_data.batch['ref_chosen_logprobs'].detach()
+                ref_rejected_logps = micro_data.batch['ref_rejected_logprobs'].detach()
             else:
                 # If no reference log probs, use policy's own log probs (detached)
                 ref_chosen_logps = chosen_log_probs.detach()
@@ -369,14 +383,14 @@ class DataParallelPPOActor(BasePPOActor):
             )
             
             # Scale loss based on batch size
-            if self.config.use_dynamic_bsz:
-                # Scale by relative batch size
-                batch_size_ratio = (len(chosen_micro) / self.config.dpo_mini_batch_size)
-                loss = loss * batch_size_ratio
-            else:
+            # if self.config.use_dynamic_bsz:
+            #     # Scale by relative batch size
+            #     batch_size_ratio = (len(chosen_micro) / self.config.dpo_mini_batch_size)
+            #     loss = loss * batch_size_ratio
+            # else:
                 # Scale by gradient accumulation steps
-                gradient_accumulation = len(chosen_micro_batches)
-                loss = loss / gradient_accumulation
+            gradient_accumulation = len(micro_batches)
+            loss = loss / gradient_accumulation
             
             # Backward pass
             loss.backward()

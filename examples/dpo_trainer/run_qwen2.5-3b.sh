@@ -31,7 +31,7 @@ python verl/trainer/main_dpo.py \
   actor_rollout.actor.use_fast_tokenizer=true \
   actor_rollout.actor.dpo_beta=0.1 \
   actor_rollout.actor.dpo_top_k_pairs=1 \
-  actor_rollout.actor.dpo_micro_batch_size_per_gpu=16 \
+  actor_rollout.actor.dpo_micro_batch_size_per_gpu=2 \
   actor_rollout.actor.max_grad_norm=1.0 \
   \
   actor_rollout.actor.optim.lr=5e-7 \
