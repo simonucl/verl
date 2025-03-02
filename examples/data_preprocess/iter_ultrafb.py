@@ -18,41 +18,48 @@ import argparse
 import os
 
 import pandas as pd
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 
 from tqdm.auto import tqdm
 
 from verl.utils.fs import copy, makedirs
 
-def generate_rl_dataset(target_hdfs_path_dir, local_dir='~/data/iter_ultrafb/rl'):
-    dataset = load_dataset('RLHFlow/iterative-prompt-v1-iter1-20K')
-    train_dataset = dataset['train']
+def generate_rl_dataset(target_hdfs_path_dir, local_dir='~/data/iter_ultrafb/rl', total_iter=6):
+    datasets = []
+    for iter in range(1, total_iter + 1):
+        dataset = load_dataset(f'RLHFlow/iterative-prompt-v1-iter{iter}-20K')
+        train_dataset = dataset['train']
 
-    data_source = 'RLHFlow/iterative-prompt-v1-iter1-20K'
+        data_source = f'RLHFlow/iterative-prompt-v1-iter{iter}-20K'
 
-    def make_map_fn(split):
-        def process_fn(example, idx):
-            # The context_messages is already in the format [{"content": "xxx", "role": "user"}]
-            prompt = example['context_messages']
-            
-            data = {
-                "data_source": data_source,
-                "prompt": prompt,
-                "ability": "alignment",
-                "reward_model": {
-                    "style": "model",
-                    "ground_truth": ""  # should not be used
-                },
-                "extra_info": {
-                    'split': split,
-                    'index': idx
+        def make_map_fn(split):
+            def process_fn(example, idx):
+                # The context_messages is already in the format [{"content": "xxx", "role": "user"}]
+                prompt = example['context_messages']
+                
+                data = {
+                    "data_source": data_source,
+                    "prompt": prompt,
+                    "ability": "alignment",
+                    "reward_model": {
+                        "style": "model",
+                        "ground_truth": ""  # should not be used
+                    },
+                    "extra_info": {
+                        'split': split,
+                        'index': idx
+                    }
                 }
-            }
-            return data
+                return data
 
-        return process_fn
+            return process_fn
 
-    train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True)
+        train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True)
+        datasets.append(train_dataset)
+
+    train_dataset = concatenate_datasets(datasets)
+
+    print(f"Length of train_dataset: {len(train_dataset)}")
     local_dir = os.path.expanduser(local_dir)
     os.makedirs(local_dir, exist_ok=True)
     
@@ -70,8 +77,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--local_dir', type=str, default='~/data/iter_ultrafb')
     parser.add_argument('--hdfs_dir', type=str, required=False, default=None)
+    parser.add_argument('--total_iter', type=int, default=6)
 
     args = parser.parse_args()
 
 
-    generate_rl_dataset(args.hdfs_dir, os.path.join(args.local_dir, 'train'))
+    generate_rl_dataset(args.hdfs_dir, os.path.join(args.local_dir, 'train'), args.total_iter)

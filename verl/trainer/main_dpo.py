@@ -37,7 +37,56 @@ from verl.workers.fsdp_workers import ActorRolloutRefWorker, RewardModelWorker
 from verl.utils.fsdp_utils import offload_fsdp_optimizer, offload_fsdp_model_to_cpu, load_fsdp_optimizer, \
     load_fsdp_model_to_gpu
 from verl.trainer.dpo.ray_trainer import RayDPOTrainer
+from verl.utils.import_utils import import_external_libs
+from verl.utils.flops_counter import FlopsCounter
+from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
+from omegaconf import DictConfig, open_dict
 
+class DPORefActorRolloutWorker(ActorRolloutRefWorker):
+    def __init__(self, config, role='actor_rollout'):
+        super().__init__(config, role)
+        self.config = config
+        self.role = role
+        self.model = None
+        self.optimizer = None
+        self.lr_scheduler = None
+        self.beta = config.actor.get('dpo_beta', 0.1)  # KL penalty coefficient
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def init_model(self):
+        from verl.workers.actor import DataParallelPPOActor
+        # This is used to import external_lib into the huggingface systems
+        import_external_libs(self.config.model.get('external_lib', None))
+
+        from omegaconf import OmegaConf
+        override_model_config = OmegaConf.to_container(self.config.model.get('override_config', OmegaConf.create()))
+
+        use_remove_padding = self.config.model.get('use_remove_padding', False)
+
+        if self.config.ref.model.path is not None:
+            model_path = self.config.ref.model.path
+            model_config = self.config.ref.model
+        else:
+            model_path = self.config.model.path
+            model_config = self.config.model
+        if self._is_ref:
+            self.ref_module_fsdp = self._build_model_optimizer(model_path=model_path,
+                                                               fsdp_config=self.config.ref.fsdp_config,
+                                                               optim_config=None,
+                                                               override_model_config=override_model_config,
+                                                               use_remove_padding=use_remove_padding,
+                                                               trust_remote_code=model_config.get(
+                                                                   'trust_remote_code', False),
+                                                               use_liger=model_config.get('use_liger', False),
+                                                               role='ref')[0]
+            OmegaConf.set_struct(self.config.ref, True)
+            with open_dict(self.config.ref):
+                self.config.ref.use_remove_padding = use_remove_padding
+            self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
+
+        torch.cuda.empty_cache()
+        
+        
 class DPOActorRolloutWorker(ActorRolloutRefWorker):
     """
     Worker implementation for DPO training that handles both actor model updates and sequence generation.
@@ -117,7 +166,7 @@ def main_task(config):
     # Define worker types for each role
     role_worker_mapping = {
         Role.ActorRollout: ray.remote(DPOActorRolloutWorker),
-        Role.RefPolicy: ray.remote(DPOActorRolloutWorker)
+        Role.RefPolicy: ray.remote(DPORefActorRolloutWorker)
     }
     
     # Add reward model if needed

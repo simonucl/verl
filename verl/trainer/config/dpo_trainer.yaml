@@ -73,10 +73,15 @@ actor_rollout:
     do_sample: True
     n: 8  # Generate multiple responses per prompt for pairwise comparison
   ref:
+    model:
+      path: null
+      external_lib: null
+      override_config: {}
+      enable_gradient_checkpointing: True
+      trust_remote_code: false
     strategy: fsdp
-    use_fast_tokenizer: True
     use_remove_padding: False
-    trust_remote_code: false
+    use_fast_tokenizer: True
     fsdp_config:
       min_num_params: 0
       param_offload: False
