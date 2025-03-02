@@ -498,7 +498,7 @@ class RayDPOTrainer(object):
             self.wg_dicts.append(wg_dict)
 
         if self.use_reference_policy:
-            self.ref_policy_wg: DPOActorRolloutWorker = all_wg['ref']
+            self.ref_policy_wg = all_wg['ref']
             self.ref_policy_wg.init_model()
             # self.ref_policy_wg.eval_model()
 
@@ -507,7 +507,7 @@ class RayDPOTrainer(object):
             self.rm_wg.init_model()
 
         # Create actor_rollout at the end for better memory estimation
-        self.actor_rollout_wg: DPOActorRolloutWorker = all_wg['actor_rollout']
+        self.actor_rollout_wg = all_wg['actor_rollout']
         self.actor_rollout_wg.init_model()
 
     def _save_checkpoint(self):

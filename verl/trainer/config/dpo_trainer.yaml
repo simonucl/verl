@@ -3,10 +3,10 @@ data:
   train_files: ~/data/rlhf/gsm8k/train.parquet
   val_files: ~/data/rlhf/gsm8k/test.parquet
   prompt_key: prompt
-  max_prompt_length: 512
-  max_response_length: 512
-  train_batch_size: 1024
-  shuffle: True
+  max_prompt_length: 2048
+  max_response_length: 1024
+  train_batch_size: 20000
+  shuffle: False
   seed: null
   return_raw_chat: True
 
@@ -23,10 +23,10 @@ actor_rollout:
     use_fast_tokenizer: True
     dpo_beta: 0.1  # Temperature parameter for DPO loss
     dpo_top_k_pairs: 1  # Number of top/bottom pairs to create for each prompt
-    dpo_micro_batch_size_per_gpu: 1
-    dpo_micro_batch_size: 8
+    dpo_mini_batch_size: 128
+    dpo_micro_batch_size_per_gpu: 2
+    dpo_epochs: 1
     use_dynamic_bsz: True
-    dpo_mini_batch_size: 8
     grad_clip: 1.0
     max_grad_norm: 1.0
     shuffle: False
@@ -66,7 +66,6 @@ actor_rollout:
     max_num_batched_tokens: 8192
     max_num_seqs: 1024
     log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
-    log_prob_micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size} # Placeholder for ppo compatibility
     log_prob_max_token_len_per_gpu: ${actor_rollout.actor.max_length}
     log_prob_use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
     disable_log_stats: True
@@ -86,7 +85,6 @@ actor_rollout:
     max_length: ${actor_rollout.actor.max_length}
     ulysses_sequence_parallel_size: 1
     log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
-    log_prob_micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size} # Placeholder for ppo compatibility
     log_prob_max_token_len_per_gpu: ${actor_rollout.actor.max_length}
     log_prob_use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
   
@@ -104,7 +102,6 @@ reward_model:
       param_offload: False
       fsdp_size: -1
   micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu}
-  micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size} # Placeholder for ppo compatibility
   max_length: ${actor_rollout.actor.max_length}
   ulysses_sequence_parallel_size: 1
   use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
