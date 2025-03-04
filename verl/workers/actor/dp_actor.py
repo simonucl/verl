@@ -31,9 +31,9 @@ from verl.utils.torch_functional import logprobs_from_logits, masked_mean
 from verl.utils.ulysses import ulysses_pad_and_slice_inputs, gather_outpus_and_unpad
 from verl.utils.seqlen_balancing import rearrange_micro_batches, get_reverse_idx
 import verl.utils.torch_functional as verl_F
-
+import numpy as np
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
-
+import wandb
 __all__ = ['DataParallelPPOActor']
 
 
@@ -350,6 +350,11 @@ class DataParallelPPOActor(BasePPOActor):
                 self.actor_optimizer.zero_grad()
 
                 total_loss = 0
+                policy_advantages = []
+                ref_advantages = []
+                chosen_kl = []
+                rejected_kl = []
+                accuracy = []
                 for micro_batch in micro_batches:
                     micro_batch = micro_batch.cuda()
                     micro_data = DataProto(batch=micro_batch)
@@ -392,6 +397,13 @@ class DataParallelPPOActor(BasePPOActor):
                         beta=self.config.dpo_beta
                     )
                     
+                    # Calculate additional DPO metrics
+                    policy_advantages.append((chosen_log_probs - rejected_log_probs).detach().cpu().mean().item())
+                    ref_advantages.append((ref_chosen_logps - ref_rejected_logps).detach().cpu().mean().item())
+                    chosen_kl.append((ref_chosen_logps - chosen_log_probs).detach().cpu().mean().item())
+                    rejected_kl.append((ref_rejected_logps - rejected_log_probs).detach().cpu().mean().item())
+                    accuracy.append(((chosen_log_probs - rejected_log_probs) > 0).float().mean().item())
+                    
                     # Scale loss based on batch size
                     loss = loss / self.gradient_accumulation
                     
@@ -402,8 +414,19 @@ class DataParallelPPOActor(BasePPOActor):
                     total_loss += loss.detach().item()
             
                 grad_norm = self._optimizer_step()
-                data = {'actor/grad_norm': grad_norm.detach().item(), 'dpo/loss': total_loss}
-                append_to_dict(metrics, data)
+                                # Add DPO metrics
+                batch_metrics = {
+                    'dpo/policy_advantage': np.mean(policy_advantages),
+                    'dpo/ref_advantage': np.mean(ref_advantages),
+                    'dpo/chosen_kl': np.mean(chosen_kl),
+                    'dpo/rejected_kl': np.mean(rejected_kl),
+                    'dpo/avg_kl': (np.mean(chosen_kl) + np.mean(rejected_kl)) / 2,
+                    'dpo/accuracy': np.mean(accuracy),
+                    'dpo/loss': total_loss,
+                    'dpo/grad_norm': grad_norm.detach().item(),
+                }
+                wandb.log(batch_metrics)
+                append_to_dict(metrics, batch_metrics)
             
             self.actor_optimizer.zero_grad()
             

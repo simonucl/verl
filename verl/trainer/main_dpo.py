@@ -124,6 +124,9 @@ class DPOActorRolloutWorker(ActorRolloutRefWorker):
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics['actor/lr'] = lr
 
+            for key, value in metrics.items():
+                if isinstance(value, list):
+                    metrics[key] = np.mean(value)
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={'metrics': metrics})
 

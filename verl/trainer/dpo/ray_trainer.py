@@ -583,39 +583,13 @@ class RayDPOTrainer(object):
         if isinstance(self.train_dataloader.dataset, RLHFDataset):
             self.train_dataloader.dataset.resume_dataset_state()
 
-    def compute_dpo_metrics(self, batch):
+    def compute_dpo_metrics(self, metrics):
         """Compute metrics for DPO training"""
-        metrics = {}
         
-        # Extract chosen and rejected logprobs
-        chosen_logprobs = batch.batch.get('chosen_logprobs', None)
-        rejected_logprobs = batch.batch.get('rejected_logprobs', None)
-        
-        if chosen_logprobs is not None and rejected_logprobs is not None:
-            # Calculate policy advantage
-            policy_advantages = chosen_logprobs - rejected_logprobs
-            
-            # Calculate reference advantage
-            ref_chosen_logprobs = batch.batch.get('ref_chosen_logprobs', None)
-            ref_rejected_logprobs = batch.batch.get('ref_rejected_logprobs', None)
-            
-            if ref_chosen_logprobs is not None and ref_rejected_logprobs is not None:
-                ref_advantages = ref_chosen_logprobs - ref_rejected_logprobs
-                
-                # Calculate KL divergence from reference policy
-                chosen_kl = ref_chosen_logprobs - chosen_logprobs
-                rejected_kl = ref_rejected_logprobs - rejected_logprobs
-                
-                # Add metrics
-                metrics['dpo/policy_advantage'] = policy_advantages.mean().item()
-                metrics['dpo/ref_advantage'] = ref_advantages.mean().item()
-                metrics['dpo/chosen_kl'] = chosen_kl.mean().item()
-                metrics['dpo/rejected_kl'] = rejected_kl.mean().item()
-                metrics['dpo/avg_kl'] = (chosen_kl.mean() + rejected_kl.mean()).item() / 2
-                
-                # Calculate accuracy (how often policy prefers the chosen response)
-                accuracy = (policy_advantages > 0).float().mean().item()
-                metrics['dpo/accuracy'] = accuracy
+        # Compute mean for metrics that are still lists
+        for key, value in metrics.items():
+            if isinstance(value, list):
+                metrics[f"avg_{key}"] = np.mean(value)
         
         return metrics
 
@@ -746,8 +720,7 @@ class RayDPOTrainer(object):
                 
                     metrics = actor_output.meta_info['metrics']
                 # Compute additional metrics
-                dpo_metrics = self.compute_dpo_metrics(pair_batch)
-                metrics.update(dpo_metrics)
+                metrics = self.compute_dpo_metrics(metrics)
                 
                 # Add timing metrics
                 timing_metrics = compute_timing_metrics(batch, timing_raw)
