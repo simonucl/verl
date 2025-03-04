@@ -425,7 +425,6 @@ class DataParallelPPOActor(BasePPOActor):
                     'dpo/loss': total_loss,
                     'dpo/grad_norm': grad_norm.detach().item(),
                 }
-                wandb.log(batch_metrics)
                 append_to_dict(metrics, batch_metrics)
             
             self.actor_optimizer.zero_grad()

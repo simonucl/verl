@@ -585,13 +585,14 @@ class RayDPOTrainer(object):
 
     def compute_dpo_metrics(self, metrics):
         """Compute metrics for DPO training"""
-        
+        new_metrics = {}
         # Compute mean for metrics that are still lists
         for key, value in metrics.items():
             if isinstance(value, list):
-                metrics[f"avg_{key}"] = np.mean(value)
-        
-        return metrics
+                new_metrics[f"{key.split('/')[0]}/avg_{key.split('/')[1]}"] = np.mean(value)
+            else:
+                new_metrics[key] = value
+        return new_metrics
 
     def train(self):
         """Main training loop for DPO"""
