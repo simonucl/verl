@@ -1,20 +1,20 @@
 #!/bin/bash
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=0,1
 export TOKENIZERS_PARALLELISM=true
 export NCCL_DEBUG=WARN
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 
 # Create output directory
-OUTPUT_DIR="./dpo_qwen_2.5_instruct_3b"
+OUTPUT_DIR="./dpo_qwen_2.5_3b"
 mkdir -p $OUTPUT_DIR
 
 # Run DPO training
 python verl/trainer/main_dpo.py \
   trainer.default_local_dir=$OUTPUT_DIR \
-  trainer.n_gpus_per_node=4 \
+  trainer.n_gpus_per_node=2 \
   trainer.nnodes=1 \
   trainer.total_epochs=1 \
   trainer.log_every_n_steps=10 \

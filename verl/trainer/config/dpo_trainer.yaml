@@ -25,6 +25,7 @@ actor_rollout:
     dpo_top_k_pairs: 1  # Number of top/bottom pairs to create for each prompt
     dpo_mini_batch_size: 128
     dpo_micro_batch_size_per_gpu: 2
+    dpo_micro_batch_size: 16
     dpo_epochs: 1
     use_dynamic_bsz: True
     grad_clip: 1.0
@@ -66,6 +67,7 @@ actor_rollout:
     max_num_batched_tokens: 8192
     max_num_seqs: 1024
     log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
+    log_prob_micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size}
     log_prob_max_token_len_per_gpu: ${actor_rollout.actor.max_length}
     log_prob_use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
     disable_log_stats: True
@@ -92,7 +94,7 @@ actor_rollout:
     log_prob_micro_batch_size_per_gpu: ${actor_rollout.actor.dpo_micro_batch_size_per_gpu} # Placeholder for ppo compatibility
     log_prob_max_token_len_per_gpu: ${actor_rollout.actor.max_length}
     log_prob_use_dynamic_bsz: ${actor_rollout.actor.use_dynamic_bsz}
-  
+    log_prob_micro_batch_size: ${actor_rollout.actor.dpo_micro_batch_size}
 reward_model:
   enable: False
   strategy: fsdp
