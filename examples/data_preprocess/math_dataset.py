@@ -43,37 +43,30 @@ if __name__ == "__main__":
 
     # 'lighteval/MATH' is no longer available on huggingface.
     # Use mirror repo: DigitalLearningGmbH/MATH-lighteval
-    data_source = "DigitalLearningGmbH/MATH-lighteval"
-    print(f"Loading the {data_source} dataset from huggingface...", flush=True)
-    if local_dataset_path is not None:
-        dataset = datasets.load_dataset(
-            local_dataset_path,
-        )
-    else:
-        dataset = datasets.load_dataset(
-            data_source,
-        )
+    # data_source = "DigitalLearningGmbH/MATH-lighteval"
+    train_data_source = "ChenmieNLP/orz"
+    test_data_source = "ChenmieNLP/olympiadbench"
+    print(f"Loading the {train_data_source} dataset from huggingface...", flush=True)
+    train_dataset = datasets.load_dataset(train_data_source)["train"]
+    print(f"Loading the {test_data_source} dataset from huggingface...", flush=True)
+    test_dataset = datasets.load_dataset(test_data_source)["train"]
 
-    train_dataset = dataset["train"]
-    test_dataset = dataset["test"]
-
+    train_data_source = "ORZ"
+    test_data_source = "OlympiadBench"
     instruction_following = "Let's think step by step and output the final answer within \\boxed{}."
 
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
         def process_fn(example, idx):
-            question = example.pop("problem")
-
-            question = question + " " + instruction_following
-
-            answer = example.pop("solution")
-            solution = extract_solution(answer)
             data = {
-                "data_source": data_source,
-                "prompt": [{"role": "user", "content": question}],
+                "data_source": "HuggingFaceH4/MATH-500",
+                "prompt": example["messages"],
                 "ability": "math",
-                "reward_model": {"style": "rule", "ground_truth": solution},
-                "extra_info": {"split": split, "index": idx},
+                "reward_model": {"style": "rule", "ground_truth": example["answer"]},
+                "extra_info": {
+                    "split": split,
+                    "index": idx,
+                },
             }
             return data
 
